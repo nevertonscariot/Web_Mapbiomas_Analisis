@@ -435,7 +435,7 @@ if pronto and st.button("🚀 Gerar análise", type="primary"):
     with st.expander("🔍 Metadados dos rasters"):
         st.dataframe(pd.DataFrame([{
             "arquivo": tif_files[i].name, "ano": anos[i], **infos[i]
-        } for i in range(len(tif_files))]), use_container_width=True, hide_index=True)
+        } for i in range(len(tif_files))]), width="stretch", hide_index=True)
 
     # máscara comum (pixels válidos = diferentes de 0 em todos os anos)
     mask = arrays[0] != 0
@@ -466,7 +466,7 @@ if pronto and st.button("🚀 Gerar análise", type="primary"):
     st.subheader("📊 Diagrama Sankey")
     fig = gerar_sankey(anos, classes, transitions, pixel_area_ha,
                        min_frac=min_frac_pct / 100.0)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Análise local
     st.subheader("📝 Análise automática (local)")
@@ -497,7 +497,7 @@ if pronto and st.button("🚀 Gerar análise", type="primary"):
         [(_nome(classes, c), ini, fim, d) for c, ini, fim, d in variacoes],
         columns=["Classe", f"{anos[0]} (ha)", f"{anos[-1]} (ha)", "Δ (ha)"]
     ).sort_values("Δ (ha)")
-    st.dataframe(df_var, use_container_width=True, hide_index=True)
+    st.dataframe(df_var, width="stretch", hide_index=True)
 
     # Tabelas de transição detalhadas
     st.subheader("📋 Tabelas de transição")
@@ -514,7 +514,7 @@ if pronto and st.button("🚀 Gerar análise", type="primary"):
         export_frames.append(disp)
         with st.expander(f"{anos[i]} → {anos[i+1]}"):
             st.dataframe(disp.drop(columns=["Período"]),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
 
     # Downloads
     st.subheader("📥 Downloads")
