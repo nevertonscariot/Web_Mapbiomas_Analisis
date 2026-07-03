@@ -147,11 +147,25 @@ def processar_tif(tif_bytes):
             crs = src.crs
             unidade_metrica = bool(crs and crs.is_projected)
 
-            arr = arr.astype("float64")
-            # trata nodata e zero (fora da área) como NaN
-            if nodata is not None:
-                arr[arr == nodata] = np.nan
-            arr[arr == 0] = np.nan
+            # --- Baixo uso de memória: manter INTEIRO, sem float64/NaN ---
+            # Códigos de classe (MapBiomas etc.) são inteiros pequenos.
+            # Usamos 0 como marcador de "sem dado"/fora da área.
+            if np.issubdtype(arr.dtype, np.floating):
+                arr = np.nan_to_num(arr, nan=0).astype(np.int32)
+            # nodata (se != 0) vira 0
+            if nodata is not None and int(nodata) != 0:
+                try:
+                    arr[arr == int(nodata)] = 0
+                except (ValueError, OverflowError):
+                    pass
+            # downcast para o menor inteiro sem sinal que couber (economia de RAM)
+            vmax = int(arr.max()) if arr.size else 0
+            if vmax <= 255:
+                arr = arr.astype(np.uint8, copy=False)
+            elif vmax <= 65535:
+                arr = arr.astype(np.uint16, copy=False)
+            else:
+                arr = arr.astype(np.int32, copy=False)
 
             # área do pixel
             if unidade_metrica and res_x > 0 and res_y > 0:
@@ -168,7 +182,7 @@ def processar_tif(tif_bytes):
                 "res": origem_res,
                 "pixel_area_ha": pixel_area_ha,
             }
-            return arr.flatten(), shape, pixel_area_ha, info
+            return arr.ravel(), shape, pixel_area_ha, info
     finally:
         os.remove(path)
 
@@ -423,11 +437,11 @@ if pronto and st.button("🚀 Gerar análise", type="primary"):
             "arquivo": tif_files[i].name, "ano": anos[i], **infos[i]
         } for i in range(len(tif_files))]), use_container_width=True, hide_index=True)
 
-    # máscara comum (pixels válidos em todos os anos)
-    mask = np.ones(len(arrays[0]), dtype=bool)
-    for arr in arrays:
-        mask &= ~np.isnan(arr)
-    arrays = [arr[mask].astype(int) for arr in arrays]
+    # máscara comum (pixels válidos = diferentes de 0 em todos os anos)
+    mask = arrays[0] != 0
+    for arr in arrays[1:]:
+        mask &= (arr != 0)
+    arrays = [arr[mask] for arr in arrays]
 
     if len(arrays[0]) == 0:
         st.error("⚠️ Nenhum pixel válido em comum entre os rasters.")
