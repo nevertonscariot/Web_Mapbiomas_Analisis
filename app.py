@@ -205,9 +205,46 @@ def processar_tif(tif_bytes):
                 "res": origem_res,
                 "pixel_area_ha": pixel_area_ha,
             }
-            return arr.ravel(), shape, pixel_area_ha, info
+            return arr, shape, pixel_area_ha, info
     finally:
         os.remove(path)
+
+
+# ----------------------------------------------------------------------------
+# Mapa colorido (RGB) a partir da grade 2D e das cores do QML
+# ----------------------------------------------------------------------------
+def mapa_rgb(grid, classes_dict, max_dim=700):
+    """Converte a grade 2D de classes em imagem RGB (fundo branco onde = 0)."""
+    h, w = grid.shape
+    step = max(1, int(math.ceil(max(h, w) / max_dim)))
+    g = grid[::step, ::step]
+    rgb = np.full((g.shape[0], g.shape[1], 3), 255, dtype=np.uint8)  # fundo branco
+    for cls in np.unique(g):
+        if int(cls) == 0:
+            continue
+        _, cor = classes_dict.get(int(cls), (str(cls), "#cccccc"))
+        cor = str(cor).lstrip("#")
+        try:
+            r, gg, b = (int(cor[i:i + 2], 16) for i in (0, 2, 4))
+        except Exception:
+            r, gg, b = 200, 200, 200
+        rgb[g == cls] = (r, gg, b)
+    return rgb
+
+
+def legenda_html(classes_presentes, classes_dict):
+    """Monta uma legenda HTML com quadradinhos de cor para as classes presentes."""
+    itens = []
+    for cls in sorted(classes_presentes):
+        if int(cls) == 0:
+            continue
+        label, cor = classes_dict.get(int(cls), (f"Classe {int(cls)}", "#cccccc"))
+        itens.append(
+            f'<span style="display:inline-flex;align-items:center;margin:2px 10px 2px 0">'
+            f'<span style="width:14px;height:14px;background:{cor};border:1px solid #888;'
+            f'display:inline-block;margin-right:5px;border-radius:2px"></span>{label}</span>'
+        )
+    return '<div style="display:flex;flex-wrap:wrap">' + "".join(itens) + "</div>"
 
 
 # ----------------------------------------------------------------------------
@@ -243,6 +280,8 @@ def gerar_sankey(anos, classes_dict, transitions, pixel_area_ha, min_frac=0.0):
     source, target, value, link_colors, customdata = [], [], [], [], []
     for t_idx, trans in enumerate(transitions):
         a1, a2 = anos[t_idx], anos[t_idx + 1]
+        # total de cada classe de origem neste período (para % de conversão)
+        tot_origem = trans.groupby(a1)["count"].sum().to_dict()
         for _, row in trans.iterrows():
             c1, c2 = int(row[a1]), int(row[a2])
             if row["count"] < limite:
@@ -259,7 +298,9 @@ def gerar_sankey(anos, classes_dict, transitions, pixel_area_ha, min_frac=0.0):
                     link_colors.append(f"rgba({r},{g},{b},0.4)")
                 except Exception:
                     link_colors.append("rgba(150,150,150,0.4)")
-                customdata.append(row["count"] * pixel_area_ha)
+                base_c1 = tot_origem.get(row[a1], 0) or 1
+                pct = row["count"] / base_c1 * 100.0
+                customdata.append([row["count"] * pixel_area_ha, pct])
 
     fig = go.Figure(go.Sankey(
         arrangement="snap",
@@ -269,7 +310,9 @@ def gerar_sankey(anos, classes_dict, transitions, pixel_area_ha, min_frac=0.0):
         link=dict(source=source, target=target, value=value, color=link_colors,
                   customdata=customdata,
                   hovertemplate="%{source.label} → %{target.label}<br>"
-                                "%{customdata:,.1f} ha<extra></extra>"),
+                                "%{customdata[0]:,.1f} ha<br>"
+                                "%{customdata[1]:.1f}% da classe de origem"
+                                "<extra></extra>"),
     ))
     fig.update_layout(title="Transições de Uso e Cobertura do Solo (LULC)",
                       font=dict(size=12), height=720,
@@ -442,15 +485,15 @@ if pronto and st.button("🚀 Gerar análise", type="primary"):
         else:
             st.info("ℹ️ Sem QML: usando IDs de classe como rótulos e cores padrão.")
 
-        arrays, shapes, infos, pixel_areas = [], [], [], []
+        grids, shapes, infos, pixel_areas = [], [], [], []
         for i, tif in enumerate(tif_files):
-            arr, shape, pa_ha, info = processar_tif(tif.read())
-            arrays.append(arr); shapes.append(shape)
+            arr, shape, pa_ha, info = processar_tif(tif.read())  # arr = grade 2D
+            grids.append(arr); shapes.append(shape)
             infos.append(info); pixel_areas.append(pa_ha)
 
-    # valida alinhamento
-    if len({s for s in shapes}) != 1:
-        st.error(f"⚠️ Os rasters têm dimensões diferentes: {shapes}. "
+    # valida alinhamento (pelas grades lidas, que devem ter o mesmo tamanho)
+    if len({g.shape for g in grids}) != 1:
+        st.error(f"⚠️ Os rasters têm dimensões diferentes: {[g.shape for g in grids]}. "
                  "Reamostre-os para a mesma grade (mesmo recorte/resolução) antes de usar.")
         st.stop()
 
@@ -461,10 +504,11 @@ if pronto and st.button("🚀 Gerar análise", type="primary"):
         } for i in range(len(tif_files))]), width="stretch", hide_index=True)
 
     # máscara comum (pixels válidos = diferentes de 0 em todos os anos)
-    mask = arrays[0] != 0
-    for arr in arrays[1:]:
-        mask &= (arr != 0)
-    arrays = [arr[mask] for arr in arrays]
+    flats = [g.ravel() for g in grids]
+    mask = flats[0] != 0
+    for f in flats[1:]:
+        mask &= (f != 0)
+    arrays = [f[mask] for f in flats]
 
     if len(arrays[0]) == 0:
         st.error("⚠️ Nenhum pixel válido em comum entre os rasters.")
@@ -487,9 +531,22 @@ if pronto and st.button("🚀 Gerar análise", type="primary"):
 
     # Sankey
     st.subheader("📊 Diagrama Sankey")
+    st.caption("Passe o mouse sobre os fluxos para ver a área (ha) e a "
+               "**% de conversão** em relação à classe de origem.")
     fig = gerar_sankey(anos, classes, transitions, pixel_area_ha,
                        min_frac=min_frac_pct / 100.0)
     st.plotly_chart(fig, width="stretch")
+
+    # Mapas por ano
+    st.subheader("🗺️ Mapas por ano")
+    presentes = set()
+    for g in grids:
+        presentes.update(int(v) for v in np.unique(g))
+    st.markdown(legenda_html(presentes, classes), unsafe_allow_html=True)
+    mcols = st.columns(len(grids))
+    for i, col in enumerate(mcols):
+        with col:
+            st.image(mapa_rgb(grids[i], classes), caption=anos[i], width="stretch")
 
     # Análise local
     st.subheader("📝 Análise automática (local)")
@@ -527,11 +584,14 @@ if pronto and st.button("🚀 Gerar análise", type="primary"):
     export_frames = []
     for i, trans in enumerate(transitions):
         disp = trans.copy()
+        # % de conversão em relação ao total da classe de origem no período
+        tot_origem = disp.groupby(anos[i])["count"].transform("sum")
+        disp["% origem"] = (disp["count"] / tot_origem * 100).round(1)
         disp["De"] = disp[anos[i]].apply(lambda x: _nome(classes, x))
         disp["Para"] = disp[anos[i + 1]].apply(lambda x: _nome(classes, x))
         disp["Hectares"] = disp["count"] * pixel_area_ha
         disp["km²"] = disp["Hectares"] / 100
-        disp = disp[["De", "Para", "count", "Hectares", "km²"]].rename(
+        disp = disp[["De", "Para", "count", "% origem", "Hectares", "km²"]].rename(
             columns={"count": "Pixels"}).sort_values("Hectares", ascending=False)
         disp.insert(0, "Período", f"{anos[i]}→{anos[i+1]}")
         export_frames.append(disp)
