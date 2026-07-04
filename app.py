@@ -13,6 +13,7 @@ Autor: adaptado por Cowork/Claude
 """
 
 import io
+import math
 import os
 import tempfile
 import xml.etree.ElementTree as ET
@@ -22,7 +23,12 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import rasterio
+from rasterio.enums import Resampling
 import streamlit as st
+
+# Limite de pixels lidos por raster (protege o teto de ~1 GB de RAM).
+# Acima disso, o raster é lido decimado (amostragem do vizinho mais próximo).
+MAX_PIXELS = 20_000_000
 
 # ----------------------------------------------------------------------------
 # Configuração da página
@@ -140,12 +146,26 @@ def processar_tif(tif_bytes):
         path = tmp.name
     try:
         with rasterio.open(path) as src:
-            arr = src.read(1)
-            shape = arr.shape
+            h, w = src.height, src.width
+            total = h * w
             nodata = src.nodata
             res_x, res_y = abs(src.res[0]), abs(src.res[1])
             crs = src.crs
             unidade_metrica = bool(crs and crs.is_projected)
+
+            # --- Proteção de memória: decima rasters muito grandes na leitura ---
+            # Cada pixel amostrado passa a representar (fator^2) pixels originais,
+            # então a área por pixel é multiplicada por fator^2 (área total mantida).
+            fator = 1
+            if total > MAX_PIXELS:
+                fator = int(math.ceil(math.sqrt(total / MAX_PIXELS)))
+            if fator > 1:
+                out_h, out_w = max(1, h // fator), max(1, w // fator)
+                arr = src.read(1, out_shape=(out_h, out_w),
+                               resampling=Resampling.nearest)  # categórico: NN
+            else:
+                arr = src.read(1)
+            shape = (h, w)
 
             # --- Baixo uso de memória: manter INTEIRO, sem float64/NaN ---
             # Códigos de classe (MapBiomas etc.) são inteiros pequenos.
@@ -167,17 +187,20 @@ def processar_tif(tif_bytes):
             else:
                 arr = arr.astype(np.int32, copy=False)
 
-            # área do pixel
+            # área do pixel (ajustada pela decimação)
             if unidade_metrica and res_x > 0 and res_y > 0:
                 pixel_area_m2 = res_x * res_y
                 origem_res = f"{res_x:.1f}m × {res_y:.1f}m (do raster)"
             else:
                 pixel_area_m2 = DEFAULT_PIXEL_SIZE_M ** 2
                 origem_res = f"{DEFAULT_PIXEL_SIZE_M:.0f}m (fallback)"
+            pixel_area_m2 *= fator * fator  # cada pixel lido = fator^2 originais
 
             pixel_area_ha = pixel_area_m2 / 10_000.0
             info = {
                 "shape": shape,
+                "lido": f"{arr.shape[1]}×{arr.shape[0]} px" + (
+                    f" (decimado {fator}×)" if fator > 1 else ""),
                 "crs": str(crs) if crs else "desconhecido",
                 "res": origem_res,
                 "pixel_area_ha": pixel_area_ha,
