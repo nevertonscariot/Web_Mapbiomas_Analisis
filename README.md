@@ -67,6 +67,9 @@ Grátis em <https://aistudio.google.com/apikey>. Ordem de busca da chave:
 └── README.md
 ```
 
+Disponivel em:
+https://webbaseflowseparator.streamlit.app/
+
 ## 📝 Notas técnicas
 
 - Os rasters precisam estar na **mesma grade** (mesmo recorte e resolução). O app
